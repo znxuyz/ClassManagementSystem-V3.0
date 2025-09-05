@@ -1064,23 +1064,23 @@
         // 全域變數
         let currentUser = null;
         let currentStudent = null;
-        let groups = JSON.parse(localStorage.getItem('groups') || '[]');
-        let students = JSON.parse(localStorage.getItem('students') || '[]');
-        let announcements = JSON.parse(localStorage.getItem('announcements') || '[]');
-        let classTitle = localStorage.getItem('classTitle') || '班級管理系統';
-        let loginAttempts = parseInt(localStorage.getItem('loginAttempts') || '0');
-        let lockoutTime = parseInt(localStorage.getItem('lockoutTime') || '0');
-        let teacherPassword = localStorage.getItem('teacherPassword') || 'hres';
-        let studentMessages = JSON.parse(localStorage.getItem('studentMessages') || '[]');
+        let groups = [];
+        let students = [];
+        let announcements = [];
+        let classTitle = '班級管理系統';
+        let loginAttempts = 0;
+        let lockoutTime = 0;
+        let teacherPassword = 'hres';
+        let studentMessages = [];
         let currentMessageFilter = 'all';
         let currentRankingMode = 'individual';
-        let scoreHistory = JSON.parse(localStorage.getItem('scoreHistory') || '[]');
+        let scoreHistory = [];
         let currentHistoryFilter = 'all';
         let currentStudentFilter = '';
-        let rewards = JSON.parse(localStorage.getItem('rewards') || '[]');
-        let exchangeRequests = JSON.parse(localStorage.getItem('exchangeRequests') || '[]');
-        let quizzes = JSON.parse(localStorage.getItem('quizzes') || '[]');
-        let quizAnswers = JSON.parse(localStorage.getItem('quizAnswers') || '[]');
+        let rewards = [];
+        let exchangeRequests = [];
+        let quizzes = [];
+        let quizAnswers = [];
         let currentQuiz = null;
         let quizCountdown = null;
 
@@ -1116,8 +1116,8 @@
                 if (lockoutTime > 0) {
                     loginAttempts = 0;
                     lockoutTime = 0;
-                    localStorage.setItem('loginAttempts', '0');
-                    localStorage.setItem('lockoutTime', '0');
+                    google.script.run.setStorage('loginAttempts', '0');
+                    google.script.run.setStorage('lockoutTime', '0');
                 }
             }
         }
@@ -1189,7 +1189,7 @@
 
             // 更新密碼
             teacherPassword = newPassword;
-            localStorage.setItem('teacherPassword', teacherPassword);
+            google.script.run.setStorage('teacherPassword', teacherPassword);
 
             // 顯示成功訊息
             document.getElementById('changePasswordSuccess').textContent = '密碼修改成功！';
@@ -1234,16 +1234,16 @@
                 currentStudent = null;
                 document.getElementById('userMode').textContent = '👩‍🏫 教師';
                 loginAttempts = 0;
-                localStorage.setItem('loginAttempts', '0');
+                google.script.run.setStorage('loginAttempts', '0');
                 closeLoginModal();
                 updateUI();
             } else {
                 loginAttempts++;
-                localStorage.setItem('loginAttempts', loginAttempts.toString());
+                google.script.run.setStorage('loginAttempts', loginAttempts.toString());
                 
                 if (loginAttempts >= 3) {
                     lockoutTime = Date.now() + 10 * 60 * 1000; // 10分鐘
-                    localStorage.setItem('lockoutTime', lockoutTime.toString());
+                    google.script.run.setStorage('lockoutTime', lockoutTime.toString());
                     checkLockout();
                 } else {
                     document.getElementById('loginError').textContent = `密碼錯誤，還有 ${3 - loginAttempts} 次機會`;
@@ -1397,15 +1397,68 @@
             if (newTitle && newTitle.trim()) {
                 classTitle = newTitle.trim();
                 document.getElementById('classTitle').textContent = classTitle;
-                localStorage.setItem('classTitle', classTitle);
+                google.script.run.setStorage('classTitle', classTitle);
             }
         }
 
         // 載入資料
         function loadData() {
-            updateRankings();
-            updateAnnouncements();
-            updateSelects();
+            const keys = ['groups','students','announcements','classTitle','loginAttempts','lockoutTime','teacherPassword','studentMessages','scoreHistory','rewards','exchangeRequests','quizzes','quizAnswers'];
+            let loaded = 0;
+            const expected = keys.length;
+
+            keys.forEach(function(key){
+                google.script.run.withSuccessHandler(function(value){
+                    try {
+                        if (value !== null && value !== undefined) {
+                            switch(key) {
+                                case 'groups': groups = value; break;
+                                case 'students': students = value; break;
+                                case 'announcements': announcements = value; break;
+                                case 'classTitle': classTitle = value; break;
+                                case 'loginAttempts': loginAttempts = parseInt(value) || 0; break;
+                                case 'lockoutTime': lockoutTime = parseInt(value) || 0; break;
+                                case 'teacherPassword': teacherPassword = value || teacherPassword; break;
+                                case 'studentMessages': studentMessages = value; break;
+                                case 'scoreHistory': scoreHistory = value; break;
+                                case 'rewards': rewards = value; break;
+                                case 'exchangeRequests': exchangeRequests = value; break;
+                                case 'quizzes': quizzes = value; break;
+                                case 'quizAnswers': quizAnswers = value; break;
+                            }
+                        }
+                    } catch(e) {
+                        console.error('loadData parse error for', key, e);
+                    }
+                    loaded++;
+                    if (loaded === expected) {
+                        // ensure defaults
+                        groups = groups || [];
+                        students = students || [];
+                        announcements = announcements || [];
+                        studentMessages = studentMessages || [];
+                        scoreHistory = scoreHistory || [];
+                        rewards = rewards || [];
+                        exchangeRequests = exchangeRequests || [];
+                        quizzes = quizzes || [];
+                        quizAnswers = quizAnswers || [];
+                        classTitle = classTitle || '班級管理系統';
+                        document.getElementById('classTitle').textContent = classTitle;
+
+                        // update UI
+                        updateRankings();
+                        updateAnnouncements();
+                        updateSelects();
+                        updateGroupStatus();
+                        updateTeacherMessages();
+                        updateCurrentQuizList();
+                        updateRewardManageList();
+                        updateQuizHistory();
+                        updateTeacherExchangeHistoryFilters();
+                        updateTeacherExchangeHistory();
+                    }
+                }).getStorage(key);
+            });
         }
 
         // 表格操作函數
@@ -1579,8 +1632,8 @@
             }
             
             if (successCount > 0) {
-                localStorage.setItem('groups', JSON.stringify(groups));
-                localStorage.setItem('students', JSON.stringify(students));
+                google.script.run.setStorage('groups', groups);
+                google.script.run.setStorage('students', students);
                 
                 // 清空表格
                 const tbody = document.getElementById('groupTableBody');
@@ -1704,8 +1757,8 @@
                     }
                 });
 
-                localStorage.setItem('groups', JSON.stringify(groups));
-                localStorage.setItem('students', JSON.stringify(students));
+                google.script.run.setStorage('groups', groups);
+                google.script.run.setStorage('students', students);
                 
                 updateGroupStatus();
                 updateRankings();
@@ -1739,8 +1792,8 @@
             groups = groups.filter(g => g.id.toString() !== groupId.toString());
             students = students.filter(s => s.groupId.toString() !== groupId.toString());
 
-            localStorage.setItem('groups', JSON.stringify(groups));
-            localStorage.setItem('students', JSON.stringify(students));
+            google.script.run.setStorage('groups', groups);
+            google.script.run.setStorage('students', students);
             
             updateGroupStatus();
             updateRankings();
@@ -1768,7 +1821,7 @@
                 }
 
                 student.name = trimmedName;
-                localStorage.setItem('students', JSON.stringify(students));
+                google.script.run.setStorage('students', students);
                 
                 updateGroupStatus();
                 updateRankings();
@@ -1807,7 +1860,7 @@
                 student.groupId = targetGroup.id;
                 student.groupName = targetGroup.name;
                 
-                localStorage.setItem('students', JSON.stringify(students));
+                google.script.run.setStorage('students', students);
                 
                 updateGroupStatus();
                 updateRankings();
@@ -1830,7 +1883,7 @@
 
             if (confirm(`確定要刪除學生「${student.name}」嗎？`)) {
                 students = students.filter(s => s.id.toString() !== studentId.toString());
-                localStorage.setItem('students', JSON.stringify(students));
+                google.script.run.setStorage('students', students);
                 
                 updateGroupStatus();
                 updateRankings();
@@ -1868,7 +1921,7 @@
             };
 
             students.push(newStudent);
-            localStorage.setItem('students', JSON.stringify(students));
+            google.script.run.setStorage('students', students);
             
             input.value = '';
             updateGroupStatus();
@@ -1896,11 +1949,11 @@
                 document.getElementById('classTitle').textContent = classTitle;
                 
                 // 清空本地存儲中的所有相關資料
-                localStorage.setItem('groups', JSON.stringify([]));
-                localStorage.setItem('students', JSON.stringify([]));
-                localStorage.setItem('announcements', JSON.stringify([]));
-                localStorage.setItem('studentMessages', JSON.stringify([]));
-                localStorage.setItem('classTitle', classTitle);
+                google.script.run.setStorage('groups', []);
+                google.script.run.setStorage('students', []);
+                google.script.run.setStorage('announcements', []);
+                google.script.run.setStorage('studentMessages', []);
+                google.script.run.setStorage('classTitle', classTitle);
                 
                 // 重置所有全域變數
                 currentMessageFilter = 'all';
@@ -1947,8 +2000,8 @@
             groups = groups.filter(g => g.id != groupId);
             students = students.filter(s => s.groupId != groupId);
 
-            localStorage.setItem('groups', JSON.stringify(groups));
-            localStorage.setItem('students', JSON.stringify(students));
+            google.script.run.setStorage('groups', groups);
+            google.script.run.setStorage('students', students);
             
             updateGroupStatus();
             updateRankings();
@@ -2024,9 +2077,9 @@
             });
 
             scoreHistory.unshift(historyRecord);
-            localStorage.setItem('groups', JSON.stringify(groups));
-            localStorage.setItem('students', JSON.stringify(students));
-            localStorage.setItem('scoreHistory', JSON.stringify(scoreHistory));
+            google.script.run.setStorage('groups', groups);
+            google.script.run.setStorage('students', students);
+            google.script.run.setStorage('scoreHistory', scoreHistory);
             
             document.getElementById('groupScore').value = '';
             updateRankings();
@@ -2077,8 +2130,8 @@
             };
 
             scoreHistory.unshift(historyRecord);
-            localStorage.setItem('students', JSON.stringify(students));
-            localStorage.setItem('scoreHistory', JSON.stringify(scoreHistory));
+            google.script.run.setStorage('students', students);
+            google.script.run.setStorage('scoreHistory', scoreHistory);
             
             document.getElementById('studentScore').value = '';
             updateRankings();
@@ -2297,7 +2350,7 @@
             };
 
             announcements.unshift(announcement);
-            localStorage.setItem('announcements', JSON.stringify(announcements));
+            google.script.run.setStorage('announcements', announcements);
             
             hideAnnouncementForm();
             updateAnnouncements();
@@ -2368,7 +2421,7 @@
             };
 
             announcement.comments.push(comment);
-            localStorage.setItem('announcements', JSON.stringify(announcements));
+            google.script.run.setStorage('announcements', announcements);
             
             input.value = '';
             updateAnnouncements();
@@ -2379,7 +2432,7 @@
             
             if (confirm('確定要刪除這個公告嗎？')) {
                 announcements = announcements.filter(a => a.id !== announcementId);
-                localStorage.setItem('announcements', JSON.stringify(announcements));
+                google.script.run.setStorage('announcements', announcements);
                 updateAnnouncements();
             }
         }
@@ -2503,7 +2556,7 @@
             };
 
             studentMessages.unshift(message);
-            localStorage.setItem('studentMessages', JSON.stringify(studentMessages));
+            google.script.run.setStorage('studentMessages', studentMessages);
             
             clearMessageForm();
             updateStudentMessages();
@@ -2679,7 +2732,7 @@
             };
 
             message.replies.push(reply);
-            localStorage.setItem('studentMessages', JSON.stringify(studentMessages));
+            google.script.run.setStorage('studentMessages', studentMessages);
             
             input.value = '';
             updateTeacherMessages();
@@ -2690,7 +2743,7 @@
             
             if (confirm('確定要刪除這則留言嗎？')) {
                 studentMessages = studentMessages.filter(msg => msg.id !== messageId);
-                localStorage.setItem('studentMessages', JSON.stringify(studentMessages));
+                google.script.run.setStorage('studentMessages', studentMessages);
                 updateTeacherMessages();
             }
         }
@@ -3154,7 +3207,7 @@
                 };
 
                 exchangeRequests.push(request);
-                localStorage.setItem('exchangeRequests', JSON.stringify(exchangeRequests));
+                google.script.run.setStorage('exchangeRequests', exchangeRequests);
                 
                 alert('兌換申請已提交，請等待老師審核');
                 updateStudentRewardsList(); // 重新整理列表以顯示審核中狀態
@@ -3207,7 +3260,7 @@
                 reader.onload = function(e) {
                     reward.image = e.target.result;
                     rewards.push(reward);
-                    localStorage.setItem('rewards', JSON.stringify(rewards));
+                    google.script.run.setStorage('rewards', rewards);
                     hideAddRewardForm();
                     updateRewardManageList();
                     alert('獎品新增成功！');
@@ -3215,7 +3268,7 @@
                 reader.readAsDataURL(imageFile);
             } else {
                 rewards.push(reward);
-                localStorage.setItem('rewards', JSON.stringify(rewards));
+                google.script.run.setStorage('rewards', rewards);
                 hideAddRewardForm();
                 updateRewardManageList();
                 alert('獎品新增成功！');
@@ -3317,14 +3370,14 @@
                 const reader = new FileReader();
                 reader.onload = function(e) {
                     reward.image = e.target.result;
-                    localStorage.setItem('rewards', JSON.stringify(rewards));
+                    google.script.run.setStorage('rewards', rewards);
                     hideEditRewardForm();
                     updateRewardManageList();
                     alert('獎品更新成功！');
                 };
                 reader.readAsDataURL(imageFile);
             } else {
-                localStorage.setItem('rewards', JSON.stringify(rewards));
+                google.script.run.setStorage('rewards', rewards);
                 hideEditRewardForm();
                 updateRewardManageList();
                 alert('獎品更新成功！');
@@ -3334,7 +3387,7 @@
         function deleteReward(rewardId) {
             if (confirm('確定要刪除這個獎品嗎？')) {
                 rewards = rewards.filter(r => r.id !== rewardId);
-                localStorage.setItem('rewards', JSON.stringify(rewards));
+                google.script.run.setStorage('rewards', rewards);
                 updateRewardManageList();
                 alert('獎品已刪除！');
             }
@@ -3562,10 +3615,10 @@
                 scoreHistory.unshift(historyRecord);
 
                 // 保存資料
-                localStorage.setItem('students', JSON.stringify(students));
-                localStorage.setItem('rewards', JSON.stringify(rewards));
-                localStorage.setItem('exchangeRequests', JSON.stringify(exchangeRequests));
-                localStorage.setItem('scoreHistory', JSON.stringify(scoreHistory));
+                google.script.run.setStorage('students', students);
+                google.script.run.setStorage('rewards', rewards);
+                google.script.run.setStorage('exchangeRequests', exchangeRequests);
+                google.script.run.setStorage('scoreHistory', scoreHistory);
 
                 updateExchangeRequests();
                 updateRewardManageList();
@@ -3583,7 +3636,7 @@
                 request.status = 'rejected';
                 request.rejectDate = new Date().toLocaleString('zh-TW');
 
-                localStorage.setItem('exchangeRequests', JSON.stringify(exchangeRequests));
+                google.script.run.setStorage('exchangeRequests', exchangeRequests);
                 updateExchangeRequests();
                 updateTeacherExchangeHistory(); // 更新老師兌換記錄
                 alert('兌換申請已拒絕！');
@@ -3727,7 +3780,7 @@
                     if (startTime <= now) {
                         // 時間到了，啟動搶分活動
                         quiz.status = 'active';
-                        localStorage.setItem('quizzes', JSON.stringify(quizzes));
+                        google.script.run.setStorage('quizzes', quizzes);
                     }
                 }
             });
@@ -3767,7 +3820,7 @@
                 if (timeDiff <= 0) {
                     // 時間到了，啟動搶分活動
                     nextQuiz.status = 'active';
-                    localStorage.setItem('quizzes', JSON.stringify(quizzes));
+                    google.script.run.setStorage('quizzes', quizzes);
                     
                     clearInterval(quizCountdown);
                     quizCountdown = null;
@@ -3874,15 +3927,15 @@
                         };
                         
                         scoreHistory.unshift(historyRecord);
-                        localStorage.setItem('students', JSON.stringify(students));
-                        localStorage.setItem('scoreHistory', JSON.stringify(scoreHistory));
+                        google.script.run.setStorage('students', students);
+                        google.script.run.setStorage('scoreHistory', scoreHistory);
                         updateRankings();
                     }
                 }
             }
             
             quizAnswers.push(answer);
-            localStorage.setItem('quizAnswers', JSON.stringify(quizAnswers));
+            google.script.run.setStorage('quizAnswers', quizAnswers);
             
             // 立即更新顯示
             updateStudentQuizList();
@@ -4065,7 +4118,7 @@
             };
             
             quizzes.push(quiz);
-            localStorage.setItem('quizzes', JSON.stringify(quizzes));
+            google.script.run.setStorage('quizzes', quizzes);
             
             hideCreateQuizForm();
             updateCurrentQuizList();
@@ -4215,7 +4268,7 @@
                 quiz.status = 'ended';
                 quiz.endDate = new Date().toLocaleString('zh-TW');
                 
-                localStorage.setItem('quizzes', JSON.stringify(quizzes));
+                google.script.run.setStorage('quizzes', quizzes);
                 updateCurrentQuizList();
                 alert('搶分活動已結束！');
             }
