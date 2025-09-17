@@ -1792,7 +1792,7 @@
             groups = groups.filter(g => g.id.toString() !== groupId.toString());
             try { google.script.run.deleteStorage('groups', groupId); } catch(e) { console.error(e); }
             students = students.filter(s => s.groupId.toString() !== groupId.toString());
-            try { (typeof groupStudents!=='undefined' ? groupStudents : []).forEach(function(s){ google.script.run.deleteStorage('students', s.id); }); } catch(e) { console.error(e); }
+            try { groupStudents.forEach(function(s){ google.script.run.deleteStorage('students', s.id); }); } catch(e) { console.error(e); }
 
             google.script.run.setStorage('groups', groups);
             google.script.run.setStorage('students', students);
@@ -1885,6 +1885,7 @@
 
             if (confirm(`確定要刪除學生「${student.name}」嗎？`)) {
                 students = students.filter(s => s.id.toString() !== studentId.toString());
+                try { google.script.run.deleteStorage('students', studentId); } catch(e) { console.error(e); }
                 google.script.run.setStorage('students', students);
                 
                 updateGroupStatus();
@@ -2000,9 +2001,7 @@
 
             // 刪除小組和該組所有學生
             groups = groups.filter(g => g.id != groupId);
-            try { google.script.run.deleteStorage('groups', groupId); } catch(e) { console.error(e); }
             students = students.filter(s => s.groupId != groupId);
-            try { (typeof groupStudents!=='undefined' ? groupStudents : []).forEach(function(s){ google.script.run.deleteStorage('students', s.id); }); } catch(e) { console.error(e); }
 
             google.script.run.setStorage('groups', groups);
             google.script.run.setStorage('students', students);
@@ -2436,9 +2435,7 @@
             
             if (confirm('確定要刪除這個公告嗎？')) {
                 announcements = announcements.filter(a => a.id !== announcementId);
-                
-                try { google.script.run.deleteStorage('announcements', announcementId); } catch(e) { console.error(e); }
-google.script.run.setStorage('announcements', announcements);
+                google.script.run.setStorage('announcements', announcements);
                 updateAnnouncements();
             }
         }
@@ -3393,9 +3390,7 @@ google.script.run.setStorage('announcements', announcements);
         function deleteReward(rewardId) {
             if (confirm('確定要刪除這個獎品嗎？')) {
                 rewards = rewards.filter(r => r.id !== rewardId);
-                
-                try { google.script.run.deleteStorage('rewards', rewardId); } catch(e) { console.error(e); }
-google.script.run.setStorage('rewards', rewards);
+                google.script.run.setStorage('rewards', rewards);
                 updateRewardManageList();
                 alert('獎品已刪除！');
             }
@@ -4115,11 +4110,16 @@ google.script.run.setStorage('rewards', rewards);
                 question: question,
                 answer: answer,
                 choices: choices,
+                choiceA: (choices && choices.A) ? choices.A : '',
+                choiceB: (choices && choices.B) ? choices.B : '',
+                choiceC: (choices && choices.C) ? choices.C : '',
+                choiceD: (choices && choices.D) ? choices.D : '',
+                correct: (answer || ''),
                 winners: winners,
                 scores: scores,
                 startType: startType,
                 startDate: startDate,
-                startTime: startTime,
+                startTime: (startType === 'immediate' ? new Date().toISOString() : startTime),
                 status: startType === 'immediate' ? 'active' : 'scheduled',
                 createDate: new Date().toLocaleString('zh-TW'),
                 endDate: null
