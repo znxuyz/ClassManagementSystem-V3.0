@@ -1406,58 +1406,69 @@
             const keys = ['groups','students','announcements','classTitle','loginAttempts','lockoutTime','teacherPassword','studentMessages','scoreHistory','rewards','exchangeRequests','quizzes','quizAnswers'];
             let loaded = 0;
             const expected = keys.length;
-
+            // finalize function to run once all keys have been processed (success or failure)
+            function finalizeLoad() {
+                // ensure defaults
+                groups = groups || [];
+                students = students || [];
+                announcements = announcements || [];
+                studentMessages = studentMessages || [];
+                scoreHistory = scoreHistory || [];
+                rewards = rewards || [];
+                exchangeRequests = exchangeRequests || [];
+                quizzes = quizzes || [];
+                quizAnswers = quizAnswers || [];
+                classTitle = classTitle || '班級管理系統';
+                document.getElementById('classTitle').textContent = classTitle;
+                // update UI
+                updateRankings();
+                updateAnnouncements();
+                updateSelects();
+                updateGroupStatus();
+                updateTeacherMessages();
+                updateCurrentQuizList();
+                updateRewardManageList();
+                updateQuizHistory();
+                updateTeacherExchangeHistoryFilters();
+                updateTeacherExchangeHistory();
+            }
             keys.forEach(function(key){
-                google.script.run.withSuccessHandler(function(value){
-                    try {
-                        if (value !== null && value !== undefined) {
-                            switch(key) {
-                                case 'groups': groups = value; break;
-                                case 'students': students = value; break;
-                                case 'announcements': announcements = value; break;
-                                case 'classTitle': classTitle = value; break;
-                                case 'loginAttempts': loginAttempts = parseInt(value) || 0; break;
-                                case 'lockoutTime': lockoutTime = parseInt(value) || 0; break;
-                                case 'teacherPassword': teacherPassword = value || teacherPassword; break;
-                                case 'studentMessages': studentMessages = value; break;
-                                case 'scoreHistory': scoreHistory = value; break;
-                                case 'rewards': rewards = value; break;
-                                case 'exchangeRequests': exchangeRequests = value; break;
-                                case 'quizzes': quizzes = value; break;
-                                case 'quizAnswers': quizAnswers = value; break;
+                google.script.run
+                    .withSuccessHandler(function(value){
+                        try {
+                            if (value !== null && value !== undefined) {
+                                switch(key) {
+                                    case 'groups': groups = value; break;
+                                    case 'students': students = value; break;
+                                    case 'announcements': announcements = value; break;
+                                    case 'classTitle': classTitle = value; break;
+                                    case 'loginAttempts': loginAttempts = parseInt(value) || 0; break;
+                                    case 'lockoutTime': lockoutTime = parseInt(value) || 0; break;
+                                    case 'teacherPassword': teacherPassword = value || teacherPassword; break;
+                                    case 'studentMessages': studentMessages = value; break;
+                                    case 'scoreHistory': scoreHistory = value; break;
+                                    case 'rewards': rewards = value; break;
+                                    case 'exchangeRequests': exchangeRequests = value; break;
+                                    case 'quizzes': quizzes = value; break;
+                                    case 'quizAnswers': quizAnswers = value; break;
+                                }
                             }
+                        } catch(e) {
+                            console.error('loadData parse error for', key, e);
                         }
-                    } catch(e) {
-                        console.error('loadData parse error for', key, e);
-                    }
-                    loaded++;
-                    if (loaded === expected) {
-                        // ensure defaults
-                        groups = groups || [];
-                        students = students || [];
-                        announcements = announcements || [];
-                        studentMessages = studentMessages || [];
-                        scoreHistory = scoreHistory || [];
-                        rewards = rewards || [];
-                        exchangeRequests = exchangeRequests || [];
-                        quizzes = quizzes || [];
-                        quizAnswers = quizAnswers || [];
-                        classTitle = classTitle || '班級管理系統';
-                        document.getElementById('classTitle').textContent = classTitle;
-
-                        // update UI
-                        updateRankings();
-                        updateAnnouncements();
-                        updateSelects();
-                        updateGroupStatus();
-                        updateTeacherMessages();
-                        updateCurrentQuizList();
-                        updateRewardManageList();
-                        updateQuizHistory();
-                        updateTeacherExchangeHistoryFilters();
-                        updateTeacherExchangeHistory();
-                    }
-                }).getStorage(key);
+                        loaded++;
+                        if (loaded === expected) {
+                            finalizeLoad();
+                        }
+                    })
+                    .withFailureHandler(function(err){
+                        console.error('loadData failed for', key, err);
+                        loaded++;
+                        if (loaded === expected) {
+                            finalizeLoad();
+                        }
+                    })
+                    .getStorage(key);
             });
         }
 
@@ -1685,7 +1696,8 @@
             }
 
             container.innerHTML = groups.map(group => {
-                const groupStudents = students.filter(s => s.groupId === group.id);
+                // compare groupId as strings to avoid number/string mismatch
+                const groupStudents = students.filter(s => String(s.groupId) === String(group.id));
                 
                 return `
                     <div class="bg-gray-50 rounded-xl p-4 border border-gray-200">
@@ -2379,7 +2391,7 @@
                             <h3 class="text-lg font-semibold text-gray-800">${announcement.title}</h3>
                             <p class="text-sm text-gray-500">${announcement.date}</p>
                         </div>
-                        ${currentUser === 'teacher' ? `<button onclick="deleteAnnouncement(${announcement.id})" class="text-red-500 hover:text-red-700">🗑️</button>` : ''}
+                        ${currentUser === 'teacher' ? `<button onclick="deleteAnnouncement('${announcement.id}')" class="text-red-500 hover:text-red-700">🗑️</button>` : ''}
                     </div>
                     <p class="text-gray-700 mb-4 whitespace-pre-wrap">${announcement.content}</p>
                     ${announcement.link ? `<a href="${announcement.link}" target="_blank" class="text-blue-500 hover:text-blue-700 underline">📎 相關連結</a>` : ''}
@@ -2400,7 +2412,7 @@
                         </div>
                         <div class="flex space-x-2">
                             <input type="text" id="comment-${announcement.id}" placeholder="輸入留言..." class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
-                            <button onclick="addComment(${announcement.id})" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors">發送</button>
+                            <button onclick="addComment('${announcement.id}')" class="bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg transition-colors">發送</button>
                         </div>
                     </div>
                 </div>
@@ -2413,7 +2425,8 @@
             
             if (!content) return;
 
-            const announcement = announcements.find(a => a.id === announcementId);
+            // 用字串比較以避免類型不一致
+            const announcement = announcements.find(a => String(a.id) === String(announcementId));
             if (!announcement) return;
 
             const comment = {
@@ -2434,7 +2447,8 @@
             if (currentUser !== 'teacher') return;
             
             if (confirm('確定要刪除這個公告嗎？')) {
-                announcements = announcements.filter(a => a.id !== announcementId);
+                // 用字串比較避免類型不一致
+                announcements = announcements.filter(a => String(a.id) !== String(announcementId));
                 google.script.run.setStorage('announcements', announcements);
                 updateAnnouncements();
             }
@@ -2485,10 +2499,11 @@
 
             // 計算個人排名
             const sortedStudents = [...students].sort((a, b) => b.score - a.score);
-            const studentRank = sortedStudents.findIndex(s => s.id === student.id) + 1;
+            // use string comparison for id to avoid type mismatch
+            const studentRank = sortedStudents.findIndex(s => String(s.id) === String(student.id)) + 1;
 
             // 獲取小組資訊
-            const group = groups.find(g => g.id === student.groupId);
+            const group = groups.find(g => String(g.id) === String(student.groupId));
             const groupScore = group ? group.score : 0;
 
             // 顯示結果
@@ -2572,8 +2587,9 @@
             // 學生只能看到自己的留言和公開留言
             let visibleMessages = [];
             if (currentUser === 'student' && currentStudent) {
+                // Compare studentId as strings to handle number/string mismatches
                 visibleMessages = studentMessages.filter(msg => 
-                    msg.studentId === currentStudent.id || msg.visibility === 'public'
+                    String(msg.studentId) === String(currentStudent.id) || msg.visibility === 'public'
                 );
             } else if (currentUser === 'teacher') {
                 visibleMessages = studentMessages;
@@ -2590,7 +2606,8 @@
             }
 
             container.innerHTML = visibleMessages.map(message => {
-                const isOwnMessage = currentUser === 'student' && currentStudent && message.studentId === currentStudent.id;
+                // Determine if this is the current student's own message (compare ids as strings)
+                const isOwnMessage = currentUser === 'student' && currentStudent && String(message.studentId) === String(currentStudent.id);
                 const visibilityIcon = message.visibility === 'public' ? '🌍' : '🔒';
                 const visibilityText = message.visibility === 'public' ? '公開' : '僅老師可見';
                 
@@ -2667,7 +2684,7 @@
                             </div>
                             <div class="flex items-center space-x-2">
                                 <div class="text-sm text-gray-500">${message.date}</div>
-                                <button onclick="deleteMessage(${message.id})" class="text-red-500 hover:text-red-700 text-sm">🗑️</button>
+                                <button onclick="deleteMessage('${message.id}')" class="text-red-500 hover:text-red-700 text-sm">🗑️</button>
                             </div>
                         </div>
                         <p class="text-gray-700 mb-3 whitespace-pre-wrap">${message.content}</p>
@@ -2692,7 +2709,7 @@
                         <div class="mt-4 pt-3 border-t border-gray-300">
                             <div class="flex space-x-2">
                                 <input type="text" id="reply-${message.id}" placeholder="回覆學生..." class="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500">
-                                <button onclick="replyToMessage(${message.id})" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg transition-colors">回覆</button>
+                                <button onclick="replyToMessage('${message.id}')" class="bg-green-500 hover:bg-green-600 text-white px-4 py-2 rounded-lg transition-colors">回覆</button>
                             </div>
                         </div>
                     </div>
@@ -2725,7 +2742,8 @@
             
             if (!content) return;
 
-            const message = studentMessages.find(msg => msg.id === messageId);
+            // 以字串比較 ID 以避免類型錯誤
+            const message = studentMessages.find(msg => String(msg.id) === String(messageId));
             if (!message) return;
 
             const reply = {
@@ -2745,7 +2763,8 @@
             if (currentUser !== 'teacher') return;
             
             if (confirm('確定要刪除這則留言嗎？')) {
-                studentMessages = studentMessages.filter(msg => msg.id !== messageId);
+                // 用字串比較避免類型不一致
+                studentMessages = studentMessages.filter(msg => String(msg.id) !== String(messageId));
                 google.script.run.setStorage('studentMessages', studentMessages);
                 updateTeacherMessages();
             }
@@ -3019,7 +3038,8 @@
             if (currentUser !== 'student' || !currentStudent) return;
             
             const container = document.getElementById('studentExchangeHistory');
-            const studentRequests = exchangeRequests.filter(req => req.studentId === currentStudent.id);
+            // filter by studentId as strings
+            const studentRequests = exchangeRequests.filter(req => String(req.studentId) === String(currentStudent.id));
             
             if (studentRequests.length === 0) {
                 container.innerHTML = `
@@ -3114,10 +3134,10 @@
                 const canAfford = currentStudent.score >= reward.points;
                 const isOutOfStock = reward.quantity <= 0;
                 
-                // 檢查是否有待審核的申請
+                // 檢查是否有待審核的申請（將 ID 轉為字串比較）
                 const pendingRequest = exchangeRequests.find(req => 
-                    req.studentId === currentStudent.id && 
-                    req.rewardId === reward.id && 
+                    String(req.studentId) === String(currentStudent.id) &&
+                    String(req.rewardId) === String(reward.id) &&
                     req.status === 'pending'
                 );
 
@@ -3165,7 +3185,7 @@
                             </div>
                         </div>
                         
-                        <button onclick="requestExchange(${reward.id})" 
+                        <button onclick="requestExchange('${reward.id}')" 
                                 ${buttonDisabled ? 'disabled' : ''} 
                                 class="w-full py-2 px-4 rounded-lg transition-colors ${buttonClass}">
                             ${buttonText}
@@ -3178,16 +3198,18 @@
         function requestExchange(rewardId) {
             if (currentUser !== 'student' || !currentStudent) return;
             
-            const reward = rewards.find(r => r.id === rewardId);
+            // 以字串比較，避免 ID 型別不一致
+            const reward = rewards.find(r => String(r.id) === String(rewardId));
             if (!reward || reward.quantity <= 0 || currentStudent.score < reward.points) {
                 alert('無法兌換此獎品');
                 return;
             }
 
             // 檢查是否已有待審核的申請
+            // 檢查是否已有待審核的申請，ID 比對改為字串
             const existingRequest = exchangeRequests.find(req => 
-                req.studentId === currentStudent.id && 
-                req.rewardId === rewardId && 
+                String(req.studentId) === String(currentStudent.id) && 
+                String(req.rewardId) === String(rewardId) && 
                 req.status === 'pending'
             );
 
@@ -3318,10 +3340,10 @@
                     </div>
                     
                     <div class="flex space-x-2">
-                        <button onclick="editReward(${reward.id})" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white py-2 px-3 rounded-lg transition-colors text-sm">
+                        <button onclick="editReward('${reward.id}')" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white py-2 px-3 rounded-lg transition-colors text-sm">
                             編輯
                         </button>
-                        <button onclick="deleteReward(${reward.id})" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-3 rounded-lg transition-colors text-sm">
+                        <button onclick="deleteReward('${reward.id}')" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-3 rounded-lg transition-colors text-sm">
                             刪除
                         </button>
                     </div>
@@ -3330,7 +3352,8 @@
         }
 
         function editReward(rewardId) {
-            const reward = rewards.find(r => r.id === rewardId);
+            // 以字串比較，避免 ID 型別不一致
+            const reward = rewards.find(r => String(r.id) === String(rewardId));
             if (!reward) return;
 
             document.getElementById('editRewardId').value = reward.id;
@@ -3349,7 +3372,8 @@
         }
 
         function updateReward() {
-            const rewardId = parseInt(document.getElementById('editRewardId').value);
+            // 直接使用字串形式的 rewardId，避免型別不一致
+            const rewardId = document.getElementById('editRewardId').value;
             const name = document.getElementById('editRewardName').value.trim();
             const points = parseInt(document.getElementById('editRewardPoints').value);
             const quantity = parseInt(document.getElementById('editRewardQuantity').value);
@@ -3361,7 +3385,8 @@
                 return;
             }
 
-            const reward = rewards.find(r => r.id === rewardId);
+            // 用字串比較尋找對應獎品
+            const reward = rewards.find(r => String(r.id) === String(rewardId));
             if (!reward) return;
 
             reward.name = name;
@@ -3389,7 +3414,8 @@
 
         function deleteReward(rewardId) {
             if (confirm('確定要刪除這個獎品嗎？')) {
-                rewards = rewards.filter(r => r.id !== rewardId);
+                // 用字串比較避免類型不一致
+                rewards = rewards.filter(r => String(r.id) !== String(rewardId));
                 google.script.run.setStorage('rewards', rewards);
                 updateRewardManageList();
                 alert('獎品已刪除！');
@@ -3420,7 +3446,8 @@
             // 獲取所有有兌換記錄的學生
             const studentsWithExchange = [...new Set(exchangeRequests.map(req => req.studentId))];
             studentsWithExchange.forEach(studentId => {
-                const student = students.find(s => s.id === studentId);
+                // 用字串比較避免類型不一致
+                const student = students.find(s => String(s.id) === String(studentId));
                 if (student) {
                     studentFilter.innerHTML += `<option value="${student.id}">${student.name} (${student.groupName})</option>`;
                 }
@@ -3512,10 +3539,10 @@
                         
                         ${request.status === 'pending' ? `
                             <div class="flex space-x-2 mt-3 pt-3 border-t border-gray-200">
-                                <button onclick="approveExchange(${request.id})" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg transition-colors text-sm">
+                                <button onclick="approveExchange('${request.id}')" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg transition-colors text-sm">
                                     同意兌換
                                 </button>
-                                <button onclick="rejectExchange(${request.id})" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-4 rounded-lg transition-colors text-sm">
+                                <button onclick="rejectExchange('${request.id}')" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-4 rounded-lg transition-colors text-sm">
                                     拒絕兌換
                                 </button>
                             </div>
@@ -3554,10 +3581,10 @@
                     </div>
                     
                     <div class="flex space-x-2">
-                        <button onclick="approveExchange(${request.id})" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg transition-colors">
+                        <button onclick="approveExchange('${request.id}')" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg transition-colors">
                             同意兌換
                         </button>
-                        <button onclick="rejectExchange(${request.id})" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-4 rounded-lg transition-colors">
+                        <button onclick="rejectExchange('${request.id}')" class="flex-1 bg-red-500 hover:bg-red-600 text-white py-2 px-4 rounded-lg transition-colors">
                             拒絕兌換
                         </button>
                     </div>
@@ -3566,11 +3593,13 @@
         }
 
         function approveExchange(requestId) {
-            const request = exchangeRequests.find(req => req.id === requestId);
+            // 根據 requestId 找申請；轉為字串比較
+            const request = exchangeRequests.find(req => String(req.id) === String(requestId));
             if (!request || request.status !== 'pending') return;
 
-            const student = students.find(s => s.id === request.studentId);
-            const reward = rewards.find(r => r.id === request.rewardId);
+            // 找學生與獎品時用字串比較 ID，避免類型不一致
+            const student = students.find(s => String(s.id) === String(request.studentId));
+            const reward = rewards.find(r => String(r.id) === String(request.rewardId));
 
             if (!student || !reward) {
                 alert('找不到學生或獎品資料');
@@ -3632,7 +3661,8 @@
         }
 
         function rejectExchange(requestId) {
-            const request = exchangeRequests.find(req => req.id === requestId);
+            // 以字串比較 ID 來尋找申請
+            const request = exchangeRequests.find(req => String(req.id) === String(requestId));
             if (!request || request.status !== 'pending') return;
 
             if (confirm(`確定拒絕 ${request.studentName} 的兌換申請嗎？`)) {
@@ -3688,8 +3718,9 @@
             }
 
             container.innerHTML = availableQuizzes.map(quiz => {
+                // 查找學生是否作答過此題目（用字串比較 quizId 與 studentId）
                 const studentAnswer = quizAnswers.find(answer => 
-                    answer.quizId === quiz.id && answer.studentId === currentStudent.id
+                    String(answer.quizId) === String(quiz.id) && String(answer.studentId) === String(currentStudent.id)
                 );
                 
                 const typeIcon = quiz.type === 'choice' ? '📝' : '💭';
@@ -3732,7 +3763,7 @@
                                     <div class="font-semibold ${studentAnswer.isCorrect ? 'text-green-800' : 'text-red-800'}">
                                         您的答案：${studentAnswer.answer}
                                     </div>
-                                    <div class="text-sm text-gray-500">${studentAnswer.timestamp}</div>
+                                    <div class="text-sm text-gray-500">${new Date(studentAnswer.submitTime).toLocaleString('zh-TW')}</div>
                                 </div>
                                 ${studentAnswer.isCorrect ? `
                                     <div class="text-sm text-green-700">
@@ -3762,7 +3793,7 @@
                                         <textarea id="textAnswer-${quiz.id}" placeholder="請輸入您的答案..." rows="3" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-red-500"></textarea>
                                     </div>
                                 `}
-                                <button onclick="submitQuizAnswer(${quiz.id})" class="w-full bg-red-500 hover:bg-red-600 text-white py-3 px-6 rounded-lg transition-colors font-semibold">
+                                <button onclick="submitQuizAnswer('${quiz.id}')" class="w-full bg-red-500 hover:bg-red-600 text-white py-3 px-6 rounded-lg transition-colors font-semibold">
                                     🚀 提交答案
                                 </button>
                             </div>
@@ -3842,23 +3873,22 @@
         }
 
         function submitQuizAnswer(quizId) {
-            const quiz = quizzes.find(q => q.id === quizId);
+            // 用字串比較查找對應的 quiz
+            const quiz = quizzes.find(q => String(q.id) === String(quizId));
             if (!quiz || !currentStudent) return;
-            
+
             // 檢查是否已經作答
-            const hasAnswered = quizAnswers.some(answer => 
-                answer.quizId === quizId && answer.studentId === currentStudent.id
+            const hasAnswered = quizAnswers.some(answer =>
+                String(answer.quizId) === String(quizId) && String(answer.studentId) === String(currentStudent.id)
             );
-            
             if (hasAnswered) {
                 alert('您已經作答過此題目');
                 return;
             }
-            
+
+            // 取得使用者答案
             let userAnswer;
-            
             if (quiz.type === 'choice') {
-                // 選擇題
                 const selectedOption = document.querySelector(`input[name="quiz-${quizId}"]:checked`);
                 if (!selectedOption) {
                     alert('請選擇一個答案');
@@ -3866,20 +3896,17 @@
                 }
                 userAnswer = selectedOption.value;
             } else {
-                // 問答題
                 const textArea = document.getElementById(`textAnswer-${quizId}`);
                 userAnswer = textArea.value.trim();
-                
                 if (!userAnswer) {
                     alert('請輸入答案');
                     return;
                 }
             }
-            
-            // 立即判斷是否正確
+
             const isCorrect = userAnswer === quiz.answer;
-            
-            // 記錄答案
+
+            // 準備答案物件，submitTime 使用 ISO 格式
             const answer = {
                 id: Date.now(),
                 quizId: quizId,
@@ -3887,61 +3914,59 @@
                 studentName: currentStudent.name,
                 groupName: currentStudent.groupName,
                 answer: userAnswer,
-                timestamp: new Date().toLocaleString('zh-TW'),
+                submitTime: new Date().toISOString(),
                 isCorrect: isCorrect
             };
-            
-            // 如果答對，檢查排名並給分
-            if (isCorrect) {
-                // 獲取所有答對的學生，按時間排序
-                const correctAnswers = quizAnswers.filter(a => 
-                    a.quizId === quizId && a.isCorrect
-                ).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-                
-                const rank = correctAnswers.length + 1; // 當前學生的排名
-                
-                if (rank <= quiz.winners) {
-                    // 在得分範圍內，給予分數
-                    const scoreAwarded = quiz.scores[rank];
-                    answer.rank = rank;
-                    answer.scoreAwarded = scoreAwarded;
-                    
-                    // 更新學生分數
-                    const student = students.find(s => s.id === currentStudent.id);
-                    if (student) {
-                        student.score += scoreAwarded;
-                        currentStudent.score += scoreAwarded; // 同步更新當前學生資料
-                        
-                        // 記錄分數變化
-                        const historyRecord = {
-                            id: Date.now() + Math.random(),
-                            type: 'quiz',
-                            targetId: student.id,
-                            targetName: student.name,
-                            groupName: student.groupName,
-                            scoreChange: scoreAwarded,
-                            reason: `搶分活動第${rank}名：${quiz.title}`,
-                            date: new Date().toLocaleString('zh-TW'),
-                            affectedStudents: [{
-                                id: student.id,
-                                name: student.name,
-                                scoreChange: scoreAwarded
-                            }]
+
+            // 從伺服器取得現有作答紀錄，再根據最新資料給分
+            google.script.run.withSuccessHandler(function(serverAnswers) {
+                if (isCorrect) {
+                    const correctAnswers = (serverAnswers || []).filter(a =>
+                        String(a.quizId) === String(quizId) && a.isCorrect
+                    ).sort((a, b) => {
+                        // 解析提交時間，若無法解析則視為最早
+                        const parseTime = (t) => {
+                            const d = new Date(t);
+                            return isNaN(d) ? 0 : d.getTime();
                         };
-                        
-                        scoreHistory.unshift(historyRecord);
-                        google.script.run.setStorage('students', students);
-                        google.script.run.setStorage('scoreHistory', scoreHistory);
-                        updateRankings();
+                        return parseTime(a.submitTime) - parseTime(b.submitTime);
+                    });
+                    const rank = correctAnswers.length + 1;
+                    if (rank <= quiz.winners) {
+                        const scoreAwarded = Number(quiz.scores[rank]);
+                        answer.rank = rank;
+                        answer.scoreAwarded = scoreAwarded;
+                        const student = students.find(s => String(s.id) === String(currentStudent.id));
+                        if (student) {
+                            // student 和 currentStudent 指向同一對象，只需加一次分數
+                            student.score += scoreAwarded;
+                            const historyRecord = {
+                                id: Date.now() + Math.random(),
+                                type: 'quiz',
+                                targetId: student.id,
+                                targetName: student.name,
+                                groupName: student.groupName,
+                                scoreChange: scoreAwarded,
+                                reason: `搶分活動第${rank}名：${quiz.title}`,
+                                date: new Date().toLocaleString('zh-TW'),
+                                affectedStudents: [{
+                                    id: student.id,
+                                    name: student.name,
+                                    scoreChange: scoreAwarded
+                                }]
+                            };
+                            scoreHistory.unshift(historyRecord);
+                            google.script.run.setStorage('students', students);
+                            google.script.run.setStorage('scoreHistory', scoreHistory);
+                            updateRankings();
+                        }
                     }
                 }
-            }
-            
-            quizAnswers.push(answer);
-            google.script.run.setStorage('quizAnswers', quizAnswers);
-            
-            // 立即更新顯示
-            updateStudentQuizList();
+                // 將答案加入本地陣列並同步到後端
+                quizAnswers.push(answer);
+                google.script.run.setStorage('quizAnswers', quizAnswers);
+                updateStudentQuizList();
+            }).getStorage('quizAnswers');
         }
 
         // 教師搶分管理功能
@@ -4154,7 +4179,8 @@
                 const statusColor = quiz.status === 'active' ? 'text-green-600' : 'text-yellow-600';
                 
                 // 統計作答情況
-                const totalAnswers = quizAnswers.filter(answer => answer.quizId === quiz.id).length;
+                // 用字串比較 quizId 避免類型不一致
+                const totalAnswers = quizAnswers.filter(answer => String(answer.quizId) === String(quiz.id)).length;
                 
                 return `
                     <div class="bg-white rounded-xl p-6 border border-gray-200 card-shadow">
@@ -4173,10 +4199,10 @@
                                 </div>
                             </div>
                             <div class="flex space-x-2">
-                                <button onclick="viewQuizAnswers(${quiz.id})" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded-lg transition-colors text-sm">
+                                <button onclick="viewQuizAnswers('${quiz.id}')" class="bg-blue-500 hover:bg-blue-600 text-white px-3 py-2 rounded-lg transition-colors text-sm">
                                     查看作答
                                 </button>
-                                <button onclick="endQuiz(${quiz.id})" class="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-lg transition-colors text-sm">
+                                <button onclick="endQuiz('${quiz.id}')" class="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-lg transition-colors text-sm">
                                     結束活動
                                 </button>
                             </div>
@@ -4208,10 +4234,10 @@
         }
 
         function viewQuizAnswers(quizId) {
-            const quiz = quizzes.find(q => q.id === quizId);
+            const quiz = quizzes.find(q => String(q.id) === String(quizId));
             if (!quiz) return;
             
-            const answers = quizAnswers.filter(answer => answer.quizId === quizId);
+            const answers = quizAnswers.filter(answer => String(answer.quizId) === String(quizId));
             
             if (answers.length === 0) {
                 alert('尚無學生作答');
@@ -4232,7 +4258,8 @@
             if (correctAnswers.length > 0) {
                 resultHTML += '✅ 答對學生（按作答時間排序）：\n';
                 correctAnswers
-                    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+                    // 按提交時間排序，使用 submitTime 欄位
+                    .sort((a, b) => new Date(a.submitTime) - new Date(b.submitTime))
                     .forEach((answer, index) => {
                         const rank = index + 1;
                         const scoreAwarded = answer.scoreAwarded || 0;
@@ -4240,7 +4267,8 @@
                         if (rank <= quiz.winners && scoreAwarded > 0) {
                             resultHTML += ` [已得 ${scoreAwarded} 分]`;
                         }
-                        resultHTML += `\n   時間：${answer.timestamp}\n`;
+                        // 將 ISO 時間轉為本地格式顯示
+                        resultHTML += `\n   時間：${new Date(answer.submitTime).toLocaleString('zh-TW')}\n`;
                     });
                 resultHTML += '\n';
             }
@@ -4249,7 +4277,8 @@
                 resultHTML += '❌ 答錯學生：\n';
                 incorrectAnswers.forEach((answer, index) => {
                     resultHTML += `${index + 1}. ${answer.studentName} (${answer.groupName}) - ${answer.answer}\n`;
-                    resultHTML += `   時間：${answer.timestamp}\n`;
+                    // 轉換 ISO 時間為本地格式
+                    resultHTML += `   時間：${new Date(answer.submitTime).toLocaleString('zh-TW')}\n`;
                 });
                 resultHTML += '\n';
             }
@@ -4269,7 +4298,8 @@
 
 
         function endQuiz(quizId) {
-            const quiz = quizzes.find(q => q.id === quizId);
+            // 用字串比較找到對應的 quiz，避免 ID 型別不一致
+            const quiz = quizzes.find(q => String(q.id) === String(quizId));
             if (!quiz) return;
             
             if (confirm(`確定要結束搶分活動「${quiz.title}」嗎？`)) {
@@ -4309,7 +4339,8 @@
             container.innerHTML = endedQuizzes.map(quiz => {
                 const typeIcon = quiz.type === 'choice' ? '📝' : '💭';
                 const typeText = quiz.type === 'choice' ? '選擇題' : '問答題';
-                const totalAnswers = quizAnswers.filter(answer => answer.quizId === quiz.id).length;
+                // 用字串比較 quizId 避免類型不一致
+                const totalAnswers = quizAnswers.filter(answer => String(answer.quizId) === String(quiz.id)).length;
                 
                 return `
                     <div class="bg-white rounded-xl p-4 border border-gray-200">
@@ -4327,7 +4358,7 @@
                                     共 ${totalAnswers} 人參與 | 前 ${quiz.winners} 名得分
                                 </div>
                             </div>
-                            <button onclick="viewQuizAnswers(${quiz.id})" class="bg-gray-500 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors text-sm">
+                            <button onclick="viewQuizAnswers('${quiz.id}')" class="bg-gray-500 hover:bg-gray-600 text-white px-3 py-2 rounded-lg transition-colors text-sm">
                                 查看結果
                             </button>
                         </div>
