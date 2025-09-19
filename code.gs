@@ -1,10 +1,15 @@
 /**
- * Code.gs — FINAL FIX
- * - 讀取 quizzes 時，自動回填舊前端期望的欄位：choices{} / answer
- * - 寫入 quizzes 時，自動展開 choiceA~D / correct / startTime
- * - 刪除獎品「前端只覆寫 setStorage」也會反映到試算表：rewards 用「整表覆寫」(含刪除)
- * - 其它：增量寫入、60s 快取、錯誤紀錄、歷史裁切、deleteStorage 真刪
+ * Class Scoreboard — Google Sheets Backend (FULL)
+ * 修正版：欄位 ↔ 功能 連結
+ * - Announcements：新增 comments(JSON)；讀寫自動 JSON 處理
+ * - studentMessages：走 Settings(JSON) 專用通道
+ * - Quizzes：新增 startDate；讀取時回填 choices{} / answer
+ * - 其它：增量寫入、整表覆寫、append 歷程、容量裁切、60s 快取、Lock、錯誤 Logs、真刪
  */
+
+////////////////////////////
+// Basic
+////////////////////////////
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('index').setTitle('班級管理系統');
@@ -13,47 +18,103 @@ function doGet() {
 function _nowISO() { return new Date().toISOString(); }
 
 function _logError(fn, msg) {
-  var sh = _ensureExactSheet('Logs', ['time','function','message']);
-  sh.appendRow([_nowISO(), fn, msg]);
+  try {
+    var sh = _ensureExactSheet('Logs', ['time','function','message']);
+    sh.appendRow([_nowISO(), fn, String(msg)]);
+  } catch (e) {
+    // 最後防線不拋出
+  }
 }
 
+function _getSS() {
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+////////////////////////////
+// Schema (表頭)
+////////////////////////////
+
+var H = {
+  Students:        ['id','name','groupId','groupName','score'],
+  Groups:          ['id','name','score'],
+  Rewards:         ['id','name','points','quantity','image','description'],
+  // ExchangeHistory: expanded to include full details for display and processing
+  ExchangeHistory: ['id','studentId','studentName','groupName','rewardId','rewardName','points','status','requestDate','approveDate','rejectDate'],
+  // ScoreHistory: JSON field affectedStudents holds list of changes
+  ScoreHistory:    ['id','type','targetId','targetName','groupName','scoreChange','reason','date','affectedStudents'], // JSON
+  // Announcements: comments is stored as JSON
+  Announcements:   ['id','title','content','link','date','comments'], // comments: JSON
+  // Quizzes: include type, scores, createDate, endDate. winners is numeric (top N winners)
+  Quizzes:         ['id','winners','title','question','choiceA','choiceB','choiceC','choiceD','correct','type','scores','startType','startDate','startTime','status','createDate','endDate'],
+  QuizAnswers:     ['id','quizId','studentId','studentName','rank','scoreAwarded','answer','isCorrect','submitTime'],
+  // StudentMessages: each message row; replies stored as JSON
+  StudentMessages: ['id','studentId','studentName','groupName','content','visibility','date','replies'],
+  Settings:        ['key','value','updatedAt']
+};
+
+// 需要 JSON.parse 的欄位
+var JSON_FIELDS = {
+  ScoreHistory: ['affectedStudents'],
+  Announcements: ['comments'],
+  // Quizzes: scores is stored as JSON string; winners is numeric
+  Quizzes: ['scores'],
+  // StudentMessages: replies is stored as JSON string
+  StudentMessages: ['replies']
+};
+
+////////////////////////////
+// Sheet helpers
+////////////////////////////
+
 function _ensureExactSheet(name, headers) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ss = _getSS();
   var sh = ss.getSheetByName(name);
   if (!sh) {
     sh = ss.insertSheet(name);
     sh.getRange(1, 1, 1, headers.length).setValues([headers]);
     return sh;
   }
-  var cur = sh.getRange(1, 1, 1, Math.max(headers.length, sh.getLastColumn())).getValues()[0];
-  var ok = true;
+  // 確保表頭一致（以你提供的 schema 為準）
+  var lastCol = sh.getLastColumn();
+  if (lastCol === 0) lastCol = headers.length; // 空表保護
+  var cur = sh.getRange(1, 1, 1, Math.max(lastCol, headers.length)).getValues()[0];
+  var changed = false;
   for (var i = 0; i < headers.length; i++) {
-    if (String(cur[i] || '') !== String(headers[i])) { ok = false; break; }
+    if (cur[i] !== headers[i]) { cur[i] = headers[i]; changed = true; }
   }
-  if (!ok) {
-    sh.clear();
-    sh.getRange(1, 1, 1, headers.length).setValues([headers]);
+  if (changed) {
+    sh.getRange(1, 1, 1, headers.length).setValues([cur.slice(0, headers.length)]);
+    if (sh.getLastColumn() > headers.length) sh.deleteColumns(headers.length + 1, sh.getLastColumn() - headers.length);
   }
   return sh;
 }
 
-function _getAllObjects(name, headers, jsonFields) {
-  try {
-    var cache = CacheService.getScriptCache();
-    var cached = cache.get(name);
-    if (cached) return JSON.parse(cached);
-  } catch (e) { _logError('_getAllObjects-cacheGet', e.toString()); }
+function _valForCell(key, val, jsonFields) {
+  if (jsonFields && jsonFields.indexOf(key) >= 0) {
+    try { return (val === undefined || val === null) ? '' : JSON.stringify(val); }
+    catch(e){ return (val === undefined || val === null) ? '' : String(val); }
+  }
+  return (val === undefined || val === null) ? '' : val;
+}
 
+// 全取（支援快取與 JSON.parse）
+function _getAllObjects(name, headers, jsonFieldsOpt) {
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get('ALL__' + name);
+  if (hit) {
+    try { return JSON.parse(hit); } catch(e){}
+  }
   var sh = _ensureExactSheet(name, headers);
   var last = sh.getLastRow();
   if (last < 2) return [];
-  var rng = sh.getRange(2, 1, last - 1, headers.length).getValues();
-  var arr = rng.map(function (row) {
+  var values = sh.getRange(2, 1, last - 1, headers.length).getValues();
+  var jsonFields = jsonFieldsOpt || (JSON_FIELDS[name] || []);
+  var arr = values.map(function(row){
     var o = {};
     for (var i = 0; i < headers.length; i++) {
       var k = headers[i], v = row[i];
-      if (jsonFields && jsonFields.indexOf(k) >= 0 && typeof v === 'string' && v) {
-        try { o[k] = JSON.parse(v); } catch (e) { o[k] = v; }
+      if (jsonFields.indexOf(k) >= 0 && typeof v === 'string' && v) {
+        try { o[k] = JSON.parse(v); } catch(e) { o[k] = v; }
       } else {
         o[k] = v;
       }
@@ -61,7 +122,7 @@ function _getAllObjects(name, headers, jsonFields) {
     return o;
   });
 
-  // 特別處理：回填 quizzes 舊欄位 (choices/answer)，讓前端不用改也能讀到
+  // 相容處理：回填 quizzes 舊欄位 (choices/answer)
   if (name === 'Quizzes') {
     arr.forEach(function(q){
       if (!q.choices) {
@@ -72,63 +133,65 @@ function _getAllObjects(name, headers, jsonFields) {
           D: q.choiceD || ''
         };
       }
-      if (!q.answer && q.correct !== undefined) {
-        q.answer = q.correct;  // 舊前端顯示 answer，這裡幫你補成 correct
-      }
+      if (q.answer === undefined && q.correct !== undefined) q.answer = q.correct;
     });
   }
 
-  try { CacheService.getScriptCache().put(name, JSON.stringify(arr), 60); }
-  catch (e) { _logError('_getAllObjects-cachePut', e.toString()); }
-
+  try { cache.put('ALL__' + name, JSON.stringify(arr), 60); } catch (e) {}
   return arr;
 }
 
-function _valForCell(field, value) {
-  if ((field === 'winners' || field === 'affectedStudents') && typeof value !== 'string') {
-    try { return JSON.stringify(value || []); } catch (e) { return '[]'; }
-  }
-  if (value === undefined) return "";
-  return value;
-}
-
-/** 完全覆寫（含刪除） */
-function _replaceAllRows(name, headers, items, jsonFields) {
-  var sh = _ensureExactSheet(name, headers);
-  sh.clear(); // 會把標題也清掉
-  sh.getRange(1, 1, 1, headers.length).setValues([headers]);
-  if (!items || !items.length) return { replaced: 0 };
-  var rows = items.map(function(it){
-    return headers.map(function(h){ return _valForCell(h, it[h]); });
-  });
-  sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
-  SpreadsheetApp.flush();
-  try { CacheService.getScriptCache().remove(name); }
-  catch (e) { _logError('_replaceAllRows-cacheRemove', e.toString()); }
-  return { replaced: rows.length };
-}
-
-/** 增量 upsert */
-function _upsertRows(name, headers, items, idField, jsonFields) {
+// 整表覆寫（保留表頭）：for rewards 等需要支援刪除的集合
+function _replaceAllRows(name, headers, items, jsonFieldsOpt) {
   var sh = _ensureExactSheet(name, headers);
   var lock = LockService.getScriptLock();
-  try { lock.waitLock(20000); } catch (e) { _logError('_upsertRows-lock', e.toString()); }
+  try { lock.waitLock(20000); } catch(e){ _logError('_replaceAllRows-lock', e); }
+
   try {
-    var existing = _getAllObjects(name, headers, jsonFields);
+    // 清除舊資料（保留第一列表頭）
+    var last = sh.getLastRow();
+    if (last > 1) sh.deleteRows(2, last - 1);
+    // 寫入新資料
+    var jsonFields = jsonFieldsOpt || (JSON_FIELDS[name] || []);
+    var rows = (items || []).map(function(it){
+      return headers.map(function(k){ return _valForCell(k, it[k], jsonFields); });
+    });
+    if (rows.length) sh.getRange(2, 1, rows.length, headers.length).setValues(rows);
+    // 清快取
+    CacheService.getScriptCache().remove('ALL__' + name);
+    return { status: 'replaced', count: rows.length };
+  } catch (e) {
+    _logError('_replaceAllRows', e.toString());
+    return { status: 'error', error: e.toString() };
+  } finally {
+    try { lock.releaseLock(); } catch(e){}
+  }
+}
+
+// 增量 upsert：依 id 覆寫/新增
+function _upsertRows(name, headers, items, idField, jsonFieldsOpt) {
+  var sh = _ensureExactSheet(name, headers);
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch(e){ _logError('_upsertRows-lock', e); }
+
+  try {
+    var existing = _getAllObjects(name, headers, jsonFieldsOpt);
     var index = {};
     for (var i = 0; i < existing.length; i++) index[String(existing[i][idField])] = i + 2;
 
     var toAppend = [];
+    var jsonFields = jsonFieldsOpt || (JSON_FIELDS[name] || []);
+
     for (var j = 0; j < (items || []).length; j++) {
-      var it = items[j];
+      var it = items[j] || {};
       var id = String(it[idField] || '');
       if (!id) { id = String(new Date().getTime()) + '-' + j; it[idField] = id; }
       if (index[id]) {
         var row = index[id];
-        var vals = headers.map(function(key){ return _valForCell(key, (it[key] !== undefined ? it[key] : '')); });
+        var vals = headers.map(function(key){ return _valForCell(key, (it[key] !== undefined ? it[key] : ''), jsonFields); });
         sh.getRange(row, 1, 1, headers.length).setValues([vals]);
       } else {
-        var valsNew = headers.map(function(key){ return _valForCell(key, (it[key] !== undefined ? it[key] : '')); });
+        var valsNew = headers.map(function(key){ return _valForCell(key, (it[key] !== undefined ? it[key] : ''), jsonFields); });
         toAppend.push(valsNew);
       }
     }
@@ -140,135 +203,78 @@ function _upsertRows(name, headers, items, idField, jsonFields) {
         start += BATCH;
       }
     }
-    SpreadsheetApp.flush();
-    try { CacheService.getScriptCache().remove(name); }
-    catch (e) { _logError('_upsertRows-cacheRemove', e.toString()); }
-    return { status: 'ok' };
+    CacheService.getScriptCache().remove('ALL__' + name);
+    return { status: 'upserted', appended: toAppend.length };
   } catch (e) {
     _logError('_upsertRows', e.toString());
-    return { status: 'error', message: e.toString() };
+    return { status: 'error', error: e.toString() };
   } finally {
-    try { lock.releaseLock(); } catch (e) {}
+    try { lock.releaseLock(); } catch(e){}
   }
 }
 
-/** 僅追加新 id（ScoreHistory/QuizAnswers 用） */
-function _appendNewById(name, headers, items, jsonFields) {
-  var list = _getAllObjects(name, headers, jsonFields);
-  var exist = {}; for (var i = 0; i < list.length; i++) exist[String(list[i].id)] = true;
-  var toAdd = [];
-  for (var j = 0; j < (items || []).length; j++) { var it = items[j]; if (!exist[String(it.id)]) toAdd.push(it); }
-  if (!toAdd.length) return { appended: 0 };
+// 只新增（避免覆寫歷史）：for ScoreHistory / QuizAnswers
+function _appendNewById(name, headers, items, jsonFieldsOpt) {
+  var sh = _ensureExactSheet(name, headers);
+  var lock = LockService.getScriptLock();
+  try { lock.waitLock(20000); } catch(e){ _logError('_appendNewById-lock', e); }
 
-  var rows = toAdd.map(function(item){
-    if (!item.id) item.id = String(new Date().getTime());
-    return H[ name ].map(function(h){ return _valForCell(h, (item[h] !== undefined ? item[h] : '')); });
-  });
+  try {
+    var existing = _getAllObjects(name, headers, jsonFieldsOpt);
+    var existingIds = {};
+    for (var i = 0; i < existing.length; i++) existingIds[String(existing[i].id)] = true;
 
-  var sh = _ensureExactSheet(name, H[name]);
-  sh.getRange(sh.getLastRow() + 1, 1, rows.length, H[name].length).setValues(rows);
-  SpreadsheetApp.flush();
-  try { CacheService.getScriptCache().remove(name); }
-  catch (e) { _logError('_appendNewById-cacheRemove', e.toString()); }
-  _trimHistoryIfNeeded(name, sh);
-  return { appended: rows.length };
-}
-
-function _trimHistoryIfNeeded(name, sh) {
-  var limits = { 'ScoreHistory': 10000, 'QuizAnswers': 5000 };
-  if (!(name in limits)) return;
-  var max = limits[name], last = sh.getLastRow();
-  if (last - 1 > max) {
-    var removeCount = (last - 1) - max;
-    sh.deleteRows(2, removeCount);
-    _logError('_trimHistoryIfNeeded', name + ' trimmed ' + removeCount + ' rows');
-  }
-}
-
-var H = {
-  Students:        ['id','name','groupId','groupName','score'],
-  Groups:          ['id','name','score'],
-  Rewards:         ['id','name','points','quantity','image','description'],
-  ExchangeHistory: ['id','studentId','rewardId','status','date'],
-  ScoreHistory:    ['id','type','targetId','targetName','groupName','scoreChange','reason','date','affectedStudents'],
-  Announcements:   ['id','title','content','link','date'],
-  Quizzes:         ['id','winners','title','question','choiceA','choiceB','choiceC','choiceD','correct','startType','startTime','status'],
-  QuizAnswers:     ['id','quizId','studentId','studentName','rank','scoreAwarded','answer','isCorrect','submitTime'],
-  Settings:        ['key','value','updatedAt']
-};
-
-function getStorage(key) {
-  switch (String(key)) {
-    case 'students':         return _getAllObjects('Students', H.Students);
-    case 'groups':           return _getAllObjects('Groups', H.Groups);
-    case 'rewards':          return _getAllObjects('Rewards', H.Rewards);
-    case 'exchangeRequests': return _getAllObjects('ExchangeHistory', H.ExchangeHistory);
-    case 'scoreHistory':     return _getAllObjects('ScoreHistory', H.ScoreHistory, ['affectedStudents']);
-    case 'announcements':    return _getAllObjects('Announcements', H.Announcements);
-    case 'quizzes':          return _getAllObjects('Quizzes', H.Quizzes, ['winners']); // 這裡會自動補 choices/answer
-    case 'quizAnswers':      return _getAllObjects('QuizAnswers', H.QuizAnswers);
-    case 'classTitle':       return _getSetting('classTitle');
-    case 'loginAttempts':    return _getSetting('loginAttempts');
-    case 'lockoutTime':      return _getSetting('lockoutTime');
-    default:                 return _getSetting(String(key));
-  }
-}
-
-function setStorage(key, value) {
-  switch (String(key)) {
-    case 'students':         return _upsertRows('Students', H.Students, value || [], 'id');
-    case 'groups':           return _upsertRows('Groups', H.Groups, value || [], 'id');
-
-    // ★獎品：整表覆寫（含刪除），解決「前端刪了但 Sheet 沒刪」的問題
-    case 'rewards': {
-      var items = (value || []).map(function(r){
-        return {
-          id: r.id, name: r.name, points: r.points, quantity: r.quantity,
-          image: r.image || '', description: r.description || ''
-        };
-      });
-      return _replaceAllRows('Rewards', H.Rewards, items);
+    var toAppend = [];
+    var jsonFields = jsonFieldsOpt || (JSON_FIELDS[name] || []);
+    (items || []).forEach(function(it, j){
+      var rowObj = Object.assign({}, it);
+      if (!rowObj.id) rowObj.id = String(new Date().getTime()) + '-' + j;
+      if (!existingIds[String(rowObj.id)]) {
+        var vals = headers.map(function(k){ return _valForCell(k, (rowObj[k] !== undefined ? rowObj[k] : ''), jsonFields); });
+        toAppend.push(vals);
+      }
+    });
+    if (toAppend.length) {
+      sh.getRange(sh.getLastRow() + 1, 1, toAppend.length, headers.length).setValues(toAppend);
     }
-
-    case 'announcements':    return _upsertRows('Announcements', H.Announcements, value || [], 'id');
-
-    // ★quizzes：同時支援舊/新欄位；寫入時自動展開 choiceA~D / correct / startTime
-    case 'quizzes': {
-      var itemsQ = (value || []).map(function(q){
-        var out = Object.assign({}, q);
-        if (q.choices) {
-          out.choiceA = q.choices.A || '';
-          out.choiceB = q.choices.B || '';
-          out.choiceC = q.choices.C || '';
-          out.choiceD = q.choices.D || '';
-        } else {
-          out.choiceA = out.choiceA || '';
-          out.choiceB = out.choiceB || '';
-          out.choiceC = out.choiceC || '';
-          out.choiceD = out.choiceD || '';
-        }
-        if (out.correct === undefined && q.answer !== undefined) out.correct = q.answer;
-        if (!out.startTime && out.startType === 'immediate') out.startTime = _nowISO();
-        if (!out.status) out.status = 'active';
-        return out;
-      });
-      return _upsertRows('Quizzes', H.Quizzes, itemsQ, 'id');
-    }
-
-    case 'scoreHistory':     return _appendNewById('ScoreHistory', H.ScoreHistory, value || [], ['affectedStudents']);
-    case 'quizAnswers':      return _appendNewById('QuizAnswers', H.QuizAnswers, value || []);
-    case 'exchangeRequests': return _upsertRows('ExchangeHistory', H.ExchangeHistory, value || [], 'id');
-    default:                 return _setSetting(String(key), value);
+    CacheService.getScriptCache().remove('ALL__' + name);
+    return { status: 'appended', count: toAppend.length };
+  } catch (e) {
+    _logError('_appendNewById', e.toString());
+    return { status: 'error', error: e.toString() };
+  } finally {
+    try { lock.releaseLock(); } catch(e){}
   }
 }
+
+// 容量裁切（保留最新 N 筆）
+function _trimMaxRows(name, headers, maxRows) {
+  var sh = _ensureExactSheet(name, headers);
+  var last = sh.getLastRow();
+  var dataRows = last - 1;
+  if (dataRows > maxRows) {
+    var toDelete = dataRows - maxRows;
+    // 刪最舊的（自第 2 列起）
+    sh.deleteRows(2, toDelete);
+    CacheService.getScriptCache().remove('ALL__' + name);
+    return { trimmed: toDelete };
+  }
+  return { trimmed: 0 };
+}
+
+////////////////////////////
+// Settings helpers
+////////////////////////////
 
 function _getSetting(key) {
   var sh = _ensureExactSheet('Settings', H.Settings);
   var last = sh.getLastRow();
-  if (last < 2) return null;
-  var rng = sh.getRange(2, 1, last - 1, 3).getValues();
-  for (var i = 0; i < rng.length; i++) if (String(rng[i][0]) === String(key)) return rng[i][1];
-  return null;
+  if (last < 2) return '';
+  var values = sh.getRange(2, 1, last - 1, 2).getValues(); // key,value
+  for (var i = 0; i < values.length; i++) {
+    if (String(values[i][0]) === String(key)) return values[i][1];
+  }
+  return '';
 }
 
 function _setSetting(key, value) {
@@ -284,14 +290,242 @@ function _setSetting(key, value) {
   return { status: 'created' };
 }
 
+function _getJSONSetting(key, defaultVal) {
+  var txt = _getSetting(key);
+  if (!txt) return (defaultVal === undefined ? null : defaultVal);
+  try { return JSON.parse(txt); } catch(e){ return (defaultVal === undefined ? null : defaultVal); }
+}
+
+function _setJSONSetting(key, obj) {
+  try {
+    var txt = JSON.stringify(obj || null);
+    return _setSetting(key, txt);
+  } catch (e) {
+    return _setSetting(key, String(obj));
+  }
+}
+
+////////////////////////////
+// Public API for Frontend
+////////////////////////////
+
+function getStorage(key) {
+  try {
+    switch (String(key)) {
+      case 'students':         return _getAllObjects('Students', H.Students);
+      case 'groups':           return _getAllObjects('Groups', H.Groups);
+      case 'rewards':          return _getAllObjects('Rewards', H.Rewards);
+      case 'exchangeRequests': return _getAllObjects('ExchangeHistory', H.ExchangeHistory);
+      case 'scoreHistory':     return _getAllObjects('ScoreHistory', H.ScoreHistory, JSON_FIELDS.ScoreHistory);
+      case 'announcements':    return _getAllObjects('Announcements', H.Announcements, JSON_FIELDS.Announcements);
+      case 'quizzes':          return _getAllObjects('Quizzes', H.Quizzes, JSON_FIELDS.Quizzes); // 讀取時會自動補 choices/answer
+      case 'quizAnswers':      return _getAllObjects('QuizAnswers', H.QuizAnswers);
+      case 'studentMessages':  {
+        // Load messages from dedicated sheet; parse replies JSON field
+        var msgs = _getAllObjects('StudentMessages', H.StudentMessages, JSON_FIELDS.StudentMessages);
+        // Always return array; do not fallback to Settings JSON storage
+        return msgs || [];
+      }
+      case 'classTitle':       return _getSetting('classTitle') || '';
+      case 'loginAttempts':    return _getSetting('loginAttempts') || 0;
+      case 'lockoutTime':      return _getSetting('lockoutTime') || '';
+      default:                 return _getSetting(String(key)); // 其餘單值設定
+    }
+  } catch (e) {
+    _logError('getStorage:' + key, e.toString());
+    throw e;
+  }
+}
+
+function setStorage(key, value) {
+  try {
+    switch (String(key)) {
+
+      case 'students':         return _upsertRows('Students', H.Students, value || [], 'id');
+
+      case 'groups':           return _upsertRows('Groups', H.Groups, value || [], 'id');
+
+      // 獎品：整表覆寫（含刪除）
+      case 'rewards': {
+        var items = (value || []).map(function(r){
+          return {
+            id: r.id, name: r.name, points: r.points, quantity: r.quantity,
+            image: r.image || '', description: r.description || ''
+          };
+        });
+        return _replaceAllRows('Rewards', H.Rewards, items);
+      }
+
+      // 公告（comments 將以 JSON 字串儲存）
+      case 'announcements': {
+        var itemsA = (value || []).map(function(a){
+          return {
+            id: a.id, title: a.title, content: a.content, link: a.link || '',
+            date: a.date || _nowISO(), comments: (a.comments || [])
+          };
+        });
+        return _upsertRows('Announcements', H.Announcements, itemsA, 'id', JSON_FIELDS.Announcements);
+      }
+
+      // quizzes：支援 choices / answer / scores / type / createDate / endDate；補 startDate 與 startTime
+      case 'quizzes': {
+        var itemsQ = (value || []).map(function(q, idx){
+          var out = {};
+          // assign id if missing
+          out.id = q.id || (String(new Date().getTime()) + '-' + idx);
+          out.title = q.title;
+          out.question = q.question;
+          // winners (top N) should be numeric
+          if (q.winners !== undefined && q.winners !== null && q.winners !== '') {
+            out.winners = parseInt(q.winners, 10);
+            if (isNaN(out.winners)) out.winners = 0;
+          } else {
+            out.winners = 0;
+          }
+          // choices mapping
+          if (q.choices) {
+            out.choiceA = q.choices.A || '';
+            out.choiceB = q.choices.B || '';
+            out.choiceC = q.choices.C || '';
+            out.choiceD = q.choices.D || '';
+          } else {
+            out.choiceA = q.choiceA || '';
+            out.choiceB = q.choiceB || '';
+            out.choiceC = q.choiceC || '';
+            out.choiceD = q.choiceD || '';
+          }
+          // correct answer: from correct or answer field
+          if (q.correct !== undefined && q.correct !== null) {
+            out.correct = q.correct;
+          } else if (q.answer !== undefined && q.answer !== null) {
+            out.correct = q.answer;
+          } else {
+            out.correct = '';
+          }
+          // type of quiz ('choice' or 'text')
+          out.type = q.type || '';
+          // scores mapping (per rank) stored as JSON
+          out.scores = q.scores || {};
+          // startType: immediate or scheduled
+          // default to 'scheduled' instead of 'schedule' to match frontend values
+          out.startType = q.startType || 'scheduled';
+          if (out.startType === 'immediate') {
+            var nowT = new Date();
+            out.startDate = Utilities.formatDate(nowT, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+            out.startTime = Utilities.formatDate(nowT, Session.getScriptTimeZone(), 'HH:mm');
+            out.status = q.status || 'active';
+          } else {
+            out.startDate = q.startDate || '';
+            out.startTime = q.startTime || '';
+            out.status = q.status || 'scheduled';
+          }
+          // createDate and endDate (optional)
+          out.createDate = q.createDate || '';
+          out.endDate = q.endDate || '';
+          return out;
+        });
+        return _upsertRows('Quizzes', H.Quizzes, itemsQ, 'id', JSON_FIELDS.Quizzes);
+      }
+
+      // 歷程與作答：只新增
+      case 'scoreHistory': {
+        var itemsH = (value || []).map(function(h){
+          return {
+            id: h.id, type: h.type, targetId: h.targetId, targetName: h.targetName,
+            groupName: h.groupName || '', scoreChange: h.scoreChange, reason: h.reason || '',
+            date: h.date || _nowISO(), affectedStudents: h.affectedStudents || []
+          };
+        });
+        var resH = _appendNewById('ScoreHistory', H.ScoreHistory, itemsH, JSON_FIELDS.ScoreHistory);
+        // 容量上限：1 萬筆
+        _trimMaxRows('ScoreHistory', H.ScoreHistory, 10000);
+        return resH;
+      }
+
+      case 'quizAnswers': {
+        var itemsQA = (value || []).map(function(a){
+          return {
+            id: a.id, quizId: a.quizId, studentId: a.studentId, studentName: a.studentName,
+            rank: a.rank || '', scoreAwarded: a.scoreAwarded || 0, answer: a.answer || '',
+            isCorrect: a.isCorrect ? true : false, submitTime: a.submitTime || _nowISO()
+          };
+        });
+        var resQA = _appendNewById('QuizAnswers', H.QuizAnswers, itemsQA);
+        // 容量上限：5000 筆
+        _trimMaxRows('QuizAnswers', H.QuizAnswers, 5000);
+        return resQA;
+      }
+
+      case 'exchangeRequests': {
+        // Upsert full exchange request records, preserving all needed fields
+        var itemsE = (value || []).map(function(r, idx){
+          var obj = {};
+          // assign id if missing
+          obj.id = r.id || (String(new Date().getTime()) + '-' + idx);
+          obj.studentId = r.studentId;
+          obj.studentName = r.studentName || '';
+          obj.groupName = r.groupName || '';
+          obj.rewardId = r.rewardId;
+          obj.rewardName = r.rewardName || '';
+          obj.points = r.points || 0;
+          obj.status = r.status || 'pending';
+          // requestDate property used by frontend; fallback to original date or now
+          obj.requestDate = r.requestDate || r.date || _nowISO();
+          obj.approveDate = r.approveDate || '';
+          obj.rejectDate = r.rejectDate || '';
+          return obj;
+        });
+        return _upsertRows('ExchangeHistory', H.ExchangeHistory, itemsE, 'id');
+      }
+
+      // studentMessages：儲存為 StudentMessages 工作表，replies 序列化
+      case 'studentMessages': {
+        var itemsM = (value || []).map(function(m, idx){
+          var obj = {};
+          obj.id = m.id || (String(new Date().getTime()) + '-' + idx);
+          obj.studentId = m.studentId;
+          obj.studentName = m.studentName || '';
+          obj.groupName = m.groupName || '';
+          obj.content = m.content || '';
+          obj.visibility = m.visibility || '';
+          obj.date = m.date || _nowISO();
+          obj.replies = m.replies || [];
+          return obj;
+        });
+        return _replaceAllRows('StudentMessages', H.StudentMessages, itemsM, JSON_FIELDS.StudentMessages);
+      }
+
+      // 單值設定
+      case 'classTitle':
+      case 'loginAttempts':
+      case 'lockoutTime': {
+        return _setSetting(String(key), (value === undefined ? '' : value));
+      }
+
+      default: {
+        // 其餘未知 key 一律當作 Settings 單值
+        return _setSetting(String(key), (value === undefined ? '' : value));
+      }
+    }
+  } catch (e) {
+    _logError('setStorage:' + key, e.toString());
+    throw e;
+  }
+}
+
+// 一次批次儲存（前端若把所有集合傳進來）
 function saveAllData(data) {
   try {
-    if (data && data.students !== undefined)         setStorage('students', data.students);
-    if (data && data.rewards  !== undefined)         setStorage('rewards',  data.rewards);
-    if (data && data.history  !== undefined)         setStorage('scoreHistory', data.history);
-    if (data && data.groups   !== undefined)         setStorage('groups',   data.groups);
-    if (data && data.exchangeRequests !== undefined) setStorage('exchangeRequests', data.exchangeRequests);
-    if (data && data.quizzes  !== undefined)         setStorage('quizzes',  data.quizzes);
+    if (data && data.students          !== undefined) setStorage('students', data.students);
+    if (data && data.groups            !== undefined) setStorage('groups', data.groups);
+    if (data && data.rewards           !== undefined) setStorage('rewards', data.rewards);
+    if (data && data.history           !== undefined) setStorage('scoreHistory', data.history);
+    if (data && data.exchangeRequests  !== undefined) setStorage('exchangeRequests', data.exchangeRequests);
+    if (data && data.announcements     !== undefined) setStorage('announcements', data.announcements);
+    if (data && data.quizzes           !== undefined) setStorage('quizzes', data.quizzes);
+    if (data && data.quizAnswers       !== undefined) setStorage('quizAnswers', data.quizAnswers);
+    if (data && data.studentMessages   !== undefined) setStorage('studentMessages', data.studentMessages);
+    if (data && data.classTitle        !== undefined) setStorage('classTitle', data.classTitle);
     return { success: true };
   } catch (e) {
     _logError('saveAllData', e.toString());
@@ -299,30 +533,34 @@ function saveAllData(data) {
   }
 }
 
-/** 真刪：刪對應 id 的資料列 */
+// 真刪：依 key / id 刪除對應資料列
 function deleteStorage(key, id) {
-  var sh, headers;
-  switch (String(key)) {
-    case 'students':         sh = _ensureExactSheet('Students', H.Students); headers = H.Students; break;
-    case 'groups':           sh = _ensureExactSheet('Groups', H.Groups); headers = H.Groups; break;
-    case 'rewards':          sh = _ensureExactSheet('Rewards', H.Rewards); headers = H.Rewards; break;
-    case 'announcements':    sh = _ensureExactSheet('Announcements', H.Announcements); headers = H.Announcements; break;
-    case 'quizzes':          sh = _ensureExactSheet('Quizzes', H.Quizzes); headers = H.Quizzes; break;
-    case 'exchangeRequests': sh = _ensureExactSheet('ExchangeHistory', H.ExchangeHistory); headers = H.ExchangeHistory; break;
-    case 'scoreHistory':     sh = _ensureExactSheet('ScoreHistory', H.ScoreHistory); headers = H.ScoreHistory; break;
-    case 'quizAnswers':      sh = _ensureExactSheet('QuizAnswers', H.QuizAnswers); headers = H.QuizAnswers; break;
-    default:                 return { status: 'error', message: 'Unsupported key: ' + key };
-  }
-  var last = sh.getLastRow();
-  if (last < 2) return { status: 'notfound' };
-  var values = sh.getRange(2, 1, last - 1, headers.length).getValues();
-  for (var i = 0; i < values.length; i++) {
-    if (String(values[i][0]) === String(id)) {
-      sh.deleteRow(i + 2);
-      try { CacheService.getScriptCache().remove(key); }
-      catch (e) { _logError('deleteStorage-cacheRemove', e.toString()); }
-      return { status: 'deleted' };
+  try {
+    var sh, headers;
+    switch (String(key)) {
+      case 'students':         sh = _ensureExactSheet('Students', H.Students); headers = H.Students; break;
+      case 'groups':           sh = _ensureExactSheet('Groups', H.Groups); headers = H.Groups; break;
+      case 'rewards':          sh = _ensureExactSheet('Rewards', H.Rewards); headers = H.Rewards; break;
+      case 'announcements':    sh = _ensureExactSheet('Announcements', H.Announcements); headers = H.Announcements; break;
+      case 'quizzes':          sh = _ensureExactSheet('Quizzes', H.Quizzes); headers = H.Quizzes; break;
+      case 'exchangeRequests': sh = _ensureExactSheet('ExchangeHistory', H.ExchangeHistory); headers = H.ExchangeHistory; break;
+      case 'scoreHistory':     sh = _ensureExactSheet('ScoreHistory', H.ScoreHistory); headers = H.ScoreHistory; break;
+      case 'quizAnswers':      sh = _ensureExactSheet('QuizAnswers', H.QuizAnswers); headers = H.QuizAnswers; break;
+      default:                 return { status: 'error', message: 'Unsupported key: ' + key };
     }
+    var last = sh.getLastRow();
+    if (last < 2) return { status: 'notfound' };
+    var values = sh.getRange(2, 1, last - 1, headers.length).getValues();
+    for (var i = 0; i < values.length; i++) {
+      if (String(values[i][0]) === String(id)) {
+        sh.deleteRow(i + 2);
+        try { CacheService.getScriptCache().remove('ALL__' + key); } catch(e){}
+        return { status: 'deleted' };
+      }
+    }
+    return { status: 'notfound' };
+  } catch (e) {
+    _logError('deleteStorage:' + key, e.toString());
+    return { status: 'error', error: e.toString() };
   }
-  return { status: 'notfound' };
 }
